@@ -152,7 +152,9 @@ public class Master extends AbstractLoggingActor {
         }
 
         for (String hint : hints) {
+            this.log().info("start");
             char missingChar = decryptHint(hint, availableCharacters);
+            this.log().info("End", missingChar);
             charsToGenPassword = charsToGenPassword.replaceFirst(Character.toString(missingChar), "");
         }
 
@@ -162,11 +164,13 @@ public class Master extends AbstractLoggingActor {
 
     private char decryptHint(String hint, String availableCharacters) {
         List<String> permutations = new ArrayList<>();
-        Worker.heapPermutation(hint.toCharArray(), hint.length(), hint.length(), permutations);
+        Worker.heapPermutation(availableCharacters.toCharArray(), availableCharacters.length(), availableCharacters.length(), permutations);
+
         for (String permutation : permutations) {
-            if (Worker.hash(permutation).equals(hint)) {
+            String correctedPermutation = permutation.substring(1);
+            if (Worker.hash(correctedPermutation).equals(hint)) {
                 for (char c : availableCharacters.toCharArray()) {
-                    if (permutation.indexOf(c) == -1) {
+                    if (correctedPermutation.indexOf(c) == -1) {
                         return c;
                     }
                 }
