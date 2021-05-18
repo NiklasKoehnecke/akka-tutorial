@@ -12,6 +12,7 @@ import akka.actor.PoisonPill;
 import akka.actor.Props;
 import akka.actor.Terminated;
 import de.hpi.ddm.structures.BloomFilter;
+import it.unimi.dsi.fastutil.Hash;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -118,17 +119,27 @@ public class Master extends AbstractLoggingActor {
         // b) Memory reduction: If the batches are processed sequentially, the memory consumption can be kept constant; if the entire input is read into main memory, the memory consumption scales at least linearly with the input size.
         // - It is your choice, how and if you want to make use of the batched inputs. Simply aggregate all batches in the Master and start the processing afterwards, if you wish.
 
-        // TODO: Stop fetching lines from the Reader once an empty BatchMessage was received; we have seen all data then
         if (message.getLines().isEmpty()) {
+            // TODO: Stop fetching lines from the Reader once an empty BatchMessage was received; we have seen all data then
+            // TODO: await all results and finish
             this.terminate();
             return;
         }
 
         // TODO: Process the lines with the help of the worker actors
         for (String[] line : message.getLines()) {
-            String password = getPassword(line);
-            this.log().error("Need help processing: {}", Arrays.toString(line));
+            String encryptedPassword = line[4];
+            String availableCharacters = line[2];
+            int passwordLength = Integer.parseInt(line[3]);
+            List<String> hints = new ArrayList<>();
+            for (int i = 5; i < line.length; i++) {
+                hints.add(line[i]);
+            }
 
+            String password = getPassword(line);
+            this.log().info("Generated password: {}", password);
+
+            break;
         }
 
         // TODO: Send (partial) results to the Collector
@@ -143,7 +154,6 @@ public class Master extends AbstractLoggingActor {
         // Parse Line
         String encryptedPassword = line[4];
         String availableCharacters = line[2];
-        String charsToGenPassword = availableCharacters;
 
         int passwordLength = Integer.parseInt(line[3]);
         List<String> hints = new ArrayList<>();
@@ -151,12 +161,9 @@ public class Master extends AbstractLoggingActor {
             hints.add(line[i]);
         }
 
-        for (String hint : hints) {
-            this.log().info("start");
-            char missingChar = decryptHint(hint, availableCharacters);
-            this.log().info("End", missingChar);
-            charsToGenPassword = charsToGenPassword.replaceFirst(Character.toString(missingChar), "");
-        }
+        this.log().info("Start decrypting hints");
+        String charsToGenPassword = decryptHint(hints, availableCharacters);
+        this.log().info("decrypted hints, combinations: " + charsToGenPassword);
 
         String password = decryptPassword(encryptedPassword, charsToGenPassword, passwordLength);
         return password;
@@ -183,7 +190,7 @@ public class Master extends AbstractLoggingActor {
 
     private String decryptPassword(String encryptedPassword, String availableCharacters, int passwordLength) {
         List<String> combinations = Worker.getAllCombinations(availableCharacters.toCharArray(), passwordLength);
-        
+
         for (String combination : combinations) {
             if (Worker.hash(combination).equals(encryptedPassword)) {
                 return combination;
