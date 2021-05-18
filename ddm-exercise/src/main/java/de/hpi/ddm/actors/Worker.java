@@ -4,6 +4,7 @@ import java.io.Serializable;
 import java.io.UnsupportedEncodingException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.List;
 
 import akka.actor.AbstractLoggingActor;
@@ -123,7 +124,7 @@ public class Worker extends AbstractLoggingActor {
 		this.log().info("WelcomeMessage with " + message.getWelcomeData().getSizeInMB() + " MB data received in " + transmissionTime + " ms.");
 	}
 	
-	private String hash(String characters) {
+	public static String hash(String characters) {
 		try {
 			MessageDigest digest = MessageDigest.getInstance("SHA-256");
 			byte[] hashedBytes = digest.digest(String.valueOf(characters).getBytes("UTF-8"));
@@ -142,7 +143,7 @@ public class Worker extends AbstractLoggingActor {
 	// Generating all permutations of an array using Heap's Algorithm
 	// https://en.wikipedia.org/wiki/Heap's_algorithm
 	// https://www.geeksforgeeks.org/heaps-algorithm-for-generating-permutations/
-	private void heapPermutation(char[] a, int size, int n, List<String> l) {
+	public static void heapPermutation(char[] a, int size, int n, List<String> l) {
 		// If size is 1, store the obtained permutation
 		if (size == 1)
 			l.add(new String(a));
@@ -163,6 +164,45 @@ public class Worker extends AbstractLoggingActor {
 				a[i] = a[size - 1];
 				a[size - 1] = temp;
 			}
+		}
+	}
+
+	public static List<String> getAllCombinations(char[] set, int k)
+	{
+		List<String> allPossibilites = new ArrayList<>();
+		int n = set.length;
+		printAllKLengthRec(set, "", n, k, allPossibilites);
+		return allPossibilites;
+	}
+
+	// The main recursive method
+	// to print all possible
+	// strings of length k
+	private static void printAllKLengthRec(char[] set,
+								   String prefix,
+								   int n, int k, List<String> allPossibilities)
+	{
+		// Base case: k is 0,
+		// print prefix
+		if (k == 0)
+		{
+			allPossibilities.add(prefix);
+			return;
+		}
+
+		// One by one add all characters
+		// from set and recursively
+		// call for k equals to k-1
+		for (int i = 0; i < n; ++i)
+		{
+
+			// Next character of input added
+			String newPrefix = prefix + set[i];
+
+			// k is decreased, because
+			// we have added a new character
+			printAllKLengthRec(set, newPrefix,
+					n, k - 1, allPossibilities);
 		}
 	}
 }
