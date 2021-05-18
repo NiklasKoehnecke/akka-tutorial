@@ -1,10 +1,7 @@
 package de.hpi.ddm.actors;
 
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.stream.Collectors;
+import java.util.*;
 
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
@@ -16,7 +13,6 @@ import it.unimi.dsi.fastutil.Hash;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import scala.collection.mutable.HashSet;
 
 public class Master extends AbstractLoggingActor {
 
@@ -26,16 +22,17 @@ public class Master extends AbstractLoggingActor {
 
     public static final String DEFAULT_NAME = "master";
 
-    public static Props props(final ActorRef reader, final ActorRef collector, final BloomFilter welcomeData) {
-        return Props.create(Master.class, () -> new Master(reader, collector, welcomeData));
+    public static Props props(final ActorRef reader, final ActorRef collector) {
+        return Props.create(Master.class, () -> new Master(reader, collector));
     }
 
-    public Master(final ActorRef reader, final ActorRef collector, final BloomFilter welcomeData) {
+    public Master(final ActorRef reader, final ActorRef collector) {
         this.reader = reader;
         this.collector = collector;
         this.workers = new ArrayList<>();
         this.largeMessageProxy = this.context().actorOf(LargeMessageProxy.props(), LargeMessageProxy.DEFAULT_NAME);
-        this.welcomeData = welcomeData;
+        this.workload = new LinkedList<>();
+        this.idleWorker = new LinkedList<>();
     }
 
     ////////////////////
@@ -56,6 +53,14 @@ public class Master extends AbstractLoggingActor {
     }
 
     @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ResultMessage implements Serializable {
+        private static final long serialVersionUID = 8343040942748609598L;
+        private HashMap<Integer, String> decryptedHints;
+    }
+
+    @Data
     public static class RegistrationMessage implements Serializable {
         private static final long serialVersionUID = 3303081601659723997L;
     }
@@ -68,7 +73,8 @@ public class Master extends AbstractLoggingActor {
     private final ActorRef collector;
     private final List<ActorRef> workers;
     private final ActorRef largeMessageProxy;
-    private final BloomFilter welcomeData;
+    private final Queue<Worker.HintDecryptMessage> workload;
+    private final Queue<ActorRef> idleWorker;
 
     private long startTime;
 
@@ -105,20 +111,6 @@ public class Master extends AbstractLoggingActor {
 
     protected void handle(BatchMessage message) {
 
-        // TODO: This is where the task begins:
-        // - The Master received the first batch of input records.
-        // - To receive the next batch, we need to send another ReadMessage to the reader.
-        // - If the received BatchMessage is empty, we have seen all data for this task.
-        // - We need a clever protocol that forms sub-tasks from the seen records, distributes the tasks to the known workers and manages the results.
-        //   -> Additional messages, maybe additional actors, code that solves the subtasks, ...
-        //   -> The code in this handle function needs to be re-written.
-        // - Once the entire processing is done, this.terminate() needs to be called.
-
-        // Info: Why is the input file read in batches?
-        // a) Latency hiding: The Reader is implemented such that it reads the next batch of data from disk while at the same time the requester of the current batch processes this batch.
-        // b) Memory reduction: If the batches are processed sequentially, the memory consumption can be kept constant; if the entire input is read into main memory, the memory consumption scales at least linearly with the input size.
-        // - It is your choice, how and if you want to make use of the batched inputs. Simply aggregate all batches in the Master and start the processing afterwards, if you wish.
-
         if (message.getLines().isEmpty()) {
             // TODO: Stop fetching lines from the Reader once an empty BatchMessage was received; we have seen all data then
             // TODO: await all results and finish
@@ -127,27 +119,43 @@ public class Master extends AbstractLoggingActor {
         }
 
         // TODO: Process the lines with the help of the worker actors
+        String availableCharacters = message.getLines().get(0)[2];
+        List<String> hints = new ArrayList<>();
         for (String[] line : message.getLines()) {
-            String encryptedPassword = line[4];
-            String availableCharacters = line[2];
-            int passwordLength = Integer.parseInt(line[3]);
-            List<String> hints = new ArrayList<>();
             for (int i = 5; i < line.length; i++) {
                 hints.add(line[i]);
             }
+        }
 
-            String password = getPassword(line);
-            this.log().info("Generated password: {}", password);
-
-            break;
+        for (char char1 : availableCharacters.toCharArray()) {
+            for (char char2 : availableCharacters.toCharArray()) {
+                if (char1 == char2) continue;
+                String newAvailable = availableCharacters
+                        .replaceFirst(Character.toString(char1), "")
+                        .replaceFirst(Character.toString(char2), "");
+                String leftOut = new String(new char[]{char1, char2});
+                Worker.HintDecryptMessage msg = new Worker.HintDecryptMessage(newAvailable, leftOut, hints);
+                workload.add(msg);
+            }
+        }
+        for(int i=0; i<idleWorker.size(); i++){
+            giveWorkerAJob(idleWorker.remove());
         }
 
         // TODO: Send (partial) results to the Collector
-        this.collector.tell(new Collector.CollectMessage("If I had results, this would be one."), this.self());
+        //this.collector.tell(new Collector.CollectMessage("If I had results, this would be one."), this.self());
 
         // TODO: Fetch further lines from the Reader
         this.reader.tell(new Reader.ReadMessage(), this.self());
 
+    }
+
+    private void giveWorkerAJob(ActorRef worker) {
+        if (workload.size() == 0) {
+            idleWorker.add(worker);
+        } else {
+            this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(workload.remove(), this.sender()), this.self());
+        }
     }
 
     private String getPassword(String[] line) {
@@ -169,23 +177,20 @@ public class Master extends AbstractLoggingActor {
         return password;
     }
 
-    private char decryptHint(String hint, String availableCharacters) {
-        List<String> permutations = new ArrayList<>();
-        Worker.heapPermutation(availableCharacters.toCharArray(), availableCharacters.length(), availableCharacters.length(), permutations);
 
-        for (String permutation : permutations) {
-            String correctedPermutation = permutation.substring(1);
-            if (Worker.hash(correctedPermutation).equals(hint)) {
-                for (char c : availableCharacters.toCharArray()) {
-                    if (correctedPermutation.indexOf(c) == -1) {
-                        return c;
-                    }
+    private String decryptHint(List<String> hints, String availableCharacters) {
+        List<String> correctCombinations = Worker.getValidPermutation(availableCharacters.toCharArray(), availableCharacters.length(), hints);
+        String validCharacters = availableCharacters;
+        for (String decryptedHint : correctCombinations) {
+            ;
+            for (char c : availableCharacters.toCharArray()) {
+                if (decryptedHint.indexOf(c) == -1) {
+                    validCharacters = validCharacters.replaceFirst(Character.toString(c), "");
                 }
-
             }
         }
-        this.log().error("Failed to decrypt hint: {}", hint);
-        return '#';
+
+        return validCharacters;
     }
 
     private String decryptPassword(String encryptedPassword, String availableCharacters, int passwordLength) {
@@ -223,10 +228,7 @@ public class Master extends AbstractLoggingActor {
         this.context().watch(this.sender());
         this.workers.add(this.sender());
         this.log().info("Registered {}", this.sender());
-
-        this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Worker.WelcomeMessage(this.welcomeData), this.sender()), this.self());
-
-        // TODO: Assign some work to registering workers. Note that the processing of the global task might have already started.
+        giveWorkerAJob(this.sender());
     }
 
     protected void handle(Terminated message) {

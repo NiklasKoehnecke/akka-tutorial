@@ -54,6 +54,16 @@ public class Worker extends AbstractLoggingActor {
         private BloomFilter welcomeData;
     }
 
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class HintDecryptMessage implements Serializable {
+        private static final long serialVersionUID = 8343040942748609598L;
+        private String availableCharacters; // Length n - x
+        private String charactersLeftOut; // Length x
+        private List<String> hints;
+    }
+
     /////////////////
     // Actor State //
     /////////////////

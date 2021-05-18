@@ -95,8 +95,4 @@ public class Configuration {
 		this.masterPort = commandWorker.masterport;
 		this.numWorkers = commandWorker.numWorkers;
 	}
-	
-	public BloomFilter generateWelcomeData() {
-		return new BloomFilter(8 * 1024 * 1024 * this.welcomeDataSize, true);
-	}
 }
