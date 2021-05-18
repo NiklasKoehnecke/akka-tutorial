@@ -128,6 +128,8 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
             KryoPool serializer = KryoPoolSingleton.get();
             byte[] output = serializer.toBytesWithClass(message);
+            //todo maybe try out without class. Alternatively register it
+            // see https://github.com/altoo-ag/akka-kryo-serialization
             Iterable<BytesMessage> groupedOutput = group(output, 100);
 
             Source<BytesMessage, NotUsed> source = Source.from(groupedOutput);

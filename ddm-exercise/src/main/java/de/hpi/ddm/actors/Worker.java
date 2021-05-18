@@ -1,15 +1,5 @@
 package de.hpi.ddm.actors;
 
-import java.io.Serializable;
-import java.io.UnsupportedEncodingException;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
 import akka.actor.PoisonPill;
@@ -18,12 +8,21 @@ import akka.cluster.Cluster;
 import akka.cluster.ClusterEvent.CurrentClusterState;
 import akka.cluster.ClusterEvent.MemberRemoved;
 import akka.cluster.ClusterEvent.MemberUp;
+import akka.cluster.Member;
+import akka.cluster.MemberStatus;
 import de.hpi.ddm.systems.MasterSystem;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import akka.cluster.Member;
-import akka.cluster.MemberStatus;
+
+import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 
 public class Worker extends AbstractLoggingActor {
 
@@ -63,7 +62,6 @@ public class Worker extends AbstractLoggingActor {
     private Member masterSystem;
     private final Cluster cluster;
     private final ActorRef largeMessageProxy;
-    private long registrationTime;
     private static final String NO_DECRYPTION = "";
 
     /////////////////////
@@ -93,7 +91,6 @@ public class Worker extends AbstractLoggingActor {
                 .match(MemberUp.class, this::handle)
                 .match(MemberRemoved.class, this::handle)
                 .match(HintDecryptMessage.class, this::handle)
-                // TODO: Add further messages here to share work between Master and Worker actors
                 .matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
                 .build();
     }
@@ -116,8 +113,6 @@ public class Worker extends AbstractLoggingActor {
             this.getContext()
                     .actorSelection(member.address() + "/user/" + Master.DEFAULT_NAME)
                     .tell(new Master.RegistrationMessage(), this.self());
-
-            this.registrationTime = System.currentTimeMillis();
         }
     }
 
@@ -130,15 +125,18 @@ public class Worker extends AbstractLoggingActor {
         this.log().info("Received work! No longer living on the streets :).");
         HashMap<Integer, Character> result = decryptHint(message.getHints(), message.getAvailableCharacters(), message.prefix);
         getSender().tell(new Master.ResultMessage(result), this.getSelf());
-        this.log().info("Finished with work.");
+        this.log().info("Finished with work. Decrypted " + result.size() + " hints!");
     }
+
+    //////////////////////
+    // Behavior methods //
+    //////////////////////
 
     private HashMap<Integer, Character> decryptHint(List<String> hints, String availableCharacters, String prefix) {
         List<String> correctCombinations = getValidPermutation(availableCharacters.toCharArray(), availableCharacters.length(), prefix, hints);
         HashMap<Integer, Character> validCombinations = new HashMap<>();
         for (int i = 0; i < hints.size(); i++) {
             String decryptedHint = correctCombinations.get(i);
-
             if (decryptedHint.equals(NO_DECRYPTION))
                 continue;
             for (char c : availableCharacters.toCharArray()) {
@@ -150,7 +148,7 @@ public class Worker extends AbstractLoggingActor {
         return validCombinations;
     }
 
-    private static String hash(String characters) {
+    public static String hash(String characters) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hashedBytes = digest.digest(String.valueOf(characters).getBytes(StandardCharsets.UTF_8));
