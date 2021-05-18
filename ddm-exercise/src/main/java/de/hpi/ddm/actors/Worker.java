@@ -2,11 +2,12 @@ package de.hpi.ddm.actors;
 
 import java.io.Serializable;
 import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 
 import akka.actor.AbstractLoggingActor;
@@ -17,7 +18,6 @@ import akka.cluster.Cluster;
 import akka.cluster.ClusterEvent.CurrentClusterState;
 import akka.cluster.ClusterEvent.MemberRemoved;
 import akka.cluster.ClusterEvent.MemberUp;
-import de.hpi.ddm.structures.BloomFilter;
 import de.hpi.ddm.systems.MasterSystem;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -49,18 +49,10 @@ public class Worker extends AbstractLoggingActor {
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
-    public static class WelcomeMessage implements Serializable {
-        private static final long serialVersionUID = 8343040942748609598L;
-        private BloomFilter welcomeData;
-    }
-
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
     public static class HintDecryptMessage implements Serializable {
         private static final long serialVersionUID = 8343040942748609598L;
         private String availableCharacters; // Length n - x
-        private String charactersLeftOut; // Length x
+        private String prefix; // Length x
         private List<String> hints;
     }
 
@@ -72,6 +64,7 @@ public class Worker extends AbstractLoggingActor {
     private final Cluster cluster;
     private final ActorRef largeMessageProxy;
     private long registrationTime;
+    private static final String NO_DECRYPTION = "";
 
     /////////////////////
     // Actor Lifecycle //
@@ -99,7 +92,7 @@ public class Worker extends AbstractLoggingActor {
                 .match(CurrentClusterState.class, this::handle)
                 .match(MemberUp.class, this::handle)
                 .match(MemberRemoved.class, this::handle)
-                .match(WelcomeMessage.class, this::handle)
+                .match(HintDecryptMessage.class, this::handle)
                 // TODO: Add further messages here to share work between Master and Worker actors
                 .matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
                 .build();
@@ -133,22 +126,41 @@ public class Worker extends AbstractLoggingActor {
             this.self().tell(PoisonPill.getInstance(), ActorRef.noSender());
     }
 
-    private void handle(WelcomeMessage message) {
-        final long transmissionTime = System.currentTimeMillis() - this.registrationTime;
-        this.log().info("WelcomeMessage with " + message.getWelcomeData().getSizeInMB() + " MB data received in " + transmissionTime + " ms.");
+    private void handle(HintDecryptMessage message) {
+        this.log().info("Received work! No longer living on the streets :).");
+        HashMap<Integer, Character> result = decryptHint(message.getHints(), message.getAvailableCharacters(), message.prefix);
+        getSender().tell(new Master.ResultMessage(result), this.getSelf());
+        this.log().info("Finished with work.");
     }
 
-    public static String hash(String characters) {
+    private HashMap<Integer, Character> decryptHint(List<String> hints, String availableCharacters, String prefix) {
+        List<String> correctCombinations = getValidPermutation(availableCharacters.toCharArray(), availableCharacters.length(), prefix, hints);
+        HashMap<Integer, Character> validCombinations = new HashMap<>();
+        for (int i = 0; i < hints.size(); i++) {
+            String decryptedHint = correctCombinations.get(i);
+
+            if (decryptedHint.equals(NO_DECRYPTION))
+                continue;
+            for (char c : availableCharacters.toCharArray()) {
+                if (decryptedHint.indexOf(c) == -1) {
+                    validCombinations.put(i, c);
+                }
+            }
+        }
+        return validCombinations;
+    }
+
+    private static String hash(String characters) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hashedBytes = digest.digest(String.valueOf(characters).getBytes("UTF-8"));
+            byte[] hashedBytes = digest.digest(String.valueOf(characters).getBytes(StandardCharsets.UTF_8));
 
-            StringBuffer stringBuffer = new StringBuffer();
-            for (int i = 0; i < hashedBytes.length; i++) {
-                stringBuffer.append(Integer.toString((hashedBytes[i] & 0xff) + 0x100, 16).substring(1));
+            StringBuilder stringBuffer = new StringBuilder();
+            for (byte hashedByte : hashedBytes) {
+                stringBuffer.append(Integer.toString((hashedByte & 0xff) + 0x100, 16).substring(1));
             }
             return stringBuffer.toString();
-        } catch (NoSuchAlgorithmException | UnsupportedEncodingException e) {
+        } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e.getMessage());
         }
     }
@@ -159,20 +171,20 @@ public class Worker extends AbstractLoggingActor {
         input[b] = tmp;
     }
 
-    public static List<String> getValidPermutation(char[] elements, int n, List<String> encryptedHints) {
-        List<String> decryptedHints = new ArrayList<>(Collections.nCopies(encryptedHints.size(), ""));
+    public static List<String> getValidPermutation(char[] elements, int n, String prefix, List<String> encryptedHints) {
+        List<String> decryptedHints = new ArrayList<>(Collections.nCopies(encryptedHints.size(), NO_DECRYPTION));
         int[] indexes = new int[n];
         for (int i = 0; i < n; i++) {
             indexes[i] = 0;
         }
-        checkHashes(elements, encryptedHints, decryptedHints);
+        checkHashes(elements, prefix, encryptedHints, decryptedHints);
 
         int i = 0;
         while (i < n) {
             if (indexes[i] < i) {
                 swap(elements, i % 2 == 0 ? 0 : indexes[i], i);
 
-                checkHashes(elements, encryptedHints, decryptedHints);
+                checkHashes(elements, prefix, encryptedHints, decryptedHints);
 
                 indexes[i]++;
                 i = 0;
@@ -185,8 +197,8 @@ public class Worker extends AbstractLoggingActor {
         return decryptedHints;
     }
 
-    private static void checkHashes(char[] elements, List<String> encryptedHints, List<String> decryptedHints) {
-        String currentCombination = new String(elements).substring(1);
+    private static void checkHashes(char[] elements, String prefix, List<String> encryptedHints, List<String> decryptedHints) {
+        String currentCombination = prefix + new String(elements).substring(1);
         String currentHash = Worker.hash(currentCombination);
         for (int hintIndex = 0; hintIndex < encryptedHints.size(); hintIndex++) {
             if (currentHash.equals(encryptedHints.get(hintIndex))) {
