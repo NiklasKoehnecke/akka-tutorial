@@ -164,7 +164,7 @@ public class Master extends AbstractLoggingActor {
             idleWorker.add(worker);
         } else {
             Worker.HintDecryptMessage work = workload.remove();
-            //new LargeMessageProxy.LargeMessage<>(work, worker), this.self());
+            //this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(work, worker), this.self());
             worker.tell(work, this.self());
             this.busyWorkers.put(worker, work);
         }
@@ -211,6 +211,7 @@ public class Master extends AbstractLoggingActor {
 
     protected void handle(ResultMessage message) {
         busyWorkers.remove(getSender());
+        this.log().info("Received result from " + getSender());
         giveWorkerAJob(getSender());
 
         for (Integer position : message.missingCharacters.keySet()) {

@@ -73,6 +73,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
     @AllArgsConstructor
     static class StreamCompleted {
         private final ActorRef receiver;
+        private final ActorRef sender;
     }
 
     @Data
@@ -124,9 +125,10 @@ public class LargeMessageProxy extends AbstractLoggingActor {
         try {
             ActorRef x = newRef.toCompletableFuture().get();
 
-            log().info("Start sending msg");
+            log().info("Start sending msg to " + x);
 
             KryoPool serializer = KryoPoolSingleton.get();
+            this.log().info("Found class when encoding " + serializer.hasRegistration(message.getClass()));
             byte[] output = serializer.toBytesWithClass(message);
             //todo maybe try out without class. Alternatively register it
             // see https://github.com/altoo-ag/akka-kryo-serialization
@@ -136,7 +138,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
             Sink<BytesMessage, NotUsed> sink = Sink.actorRefWithBackpressure(x,
                     new StreamInitialized(),
                     Ack.INSTANCE,
-                    new StreamCompleted(receiver),
+                    new StreamCompleted(receiver, getSender()),
                     ex -> new StreamFailure(ex));
             source.runWith(sink, this.getContext().getSystem());
         } catch (InterruptedException e) {
@@ -151,14 +153,17 @@ public class LargeMessageProxy extends AbstractLoggingActor {
         KryoPool serializer = KryoPoolSingleton.get();
         ActorRef receiver = message.getReceiver();
 
-        LargeMessage originalMessage = new LargeMessage(serializer.fromBytes(convertMessages()), receiver);
-        receiver.tell(originalMessage.getMessage(), getSelf());
+        Object originalMessage = serializer.fromBytes(convertMessages());
+        //LargeMessage originalMessage = new LargeMessage(serializer.fromBytes(convertMessages()), receiver);
+        receiver.tell(originalMessage, message.getSender());
+        this.log().info("Send answer");
     }
 
     private static byte[] convertMessages() {
         int totalBytes = (data.size() - 1) * data.get(0).getBytes().length + data.get(data.size() - 1).getBytes().length;
         byte[] bytes = new byte[totalBytes];
         int i = 0;
+        //TODO concurrentModificationException
         for (BytesMessage m : data) {
             System.arraycopy(m.getBytes(), 0, bytes, i, m.getBytes().length);
             i += m.getBytes().length;
