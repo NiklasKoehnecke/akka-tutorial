@@ -132,9 +132,7 @@ public class Master extends AbstractLoggingActor {
 
         List<String> hints = new ArrayList<>();
         for (String[] line : message.getLines()) {
-            for (int i = 5; i < line.length; i++) {
-                hints.add(line[i]);
-            }
+            hints.addAll(Arrays.asList(line).subList(5, line.length));
             hintSizes.add(line.length - 5);
             passwords.add(line[4]);
         }
@@ -218,16 +216,14 @@ public class Master extends AbstractLoggingActor {
             missingCharacters.set(position, message.missingCharacters.get(position));
         }
 
-        int missingCharactersFound = missingCharacters.stream()
-                .filter(character -> !character.equals(NO_CHAR))
-                .collect(Collectors.toList())
-                .size();
+        int missingCharactersFound = (int) missingCharacters.stream()
+                .filter(character -> !character.equals(NO_CHAR)).count();
         int totalSize = hintSizes.stream().reduce(0, Integer::sum);
-        System.out.println("Waiting for " + (totalSize - missingCharactersFound) + " Results");
+        this.log().info("Waiting for " + (totalSize - missingCharactersFound) + " Results");
         if (missingCharactersFound != totalSize) {
             return;
         }
-        System.out.println("Calculate Passwords");
+        this.log().info("Calculate Passwords");
 
         List<List<Character>> deflattened = deflattenDecryptedHints(missingCharacters, hintSizes);
         for (int i = 0; i < passwords.size(); i++) {
