@@ -45,14 +45,30 @@ public class Worker extends AbstractLoggingActor {
     // Actor Messages //
     ////////////////////
 
+    public static abstract class WorkerTask {
+
+    }
+
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
-    public static class HintDecryptMessage implements Serializable {
+    public static class HintDecryptMessage extends WorkerTask implements Serializable {
         private static final long serialVersionUID = 8343040942748609598L;
         private String availableCharacters; // Length n - x
         private String prefix; // Length x
         private List<String> hints;
+        private int batchID;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PasswordDecryptMessage extends WorkerTask implements Serializable {
+        private static final long serialVersionUID = 8343040942748609598L;
+        private String encryptedPassword;
+        private String charactersAllowed;
+        private int passwordSize;
+        private int batchID;
     }
 
     /////////////////
@@ -91,6 +107,7 @@ public class Worker extends AbstractLoggingActor {
                 .match(MemberUp.class, this::handle)
                 .match(MemberRemoved.class, this::handle)
                 .match(HintDecryptMessage.class, this::handle)
+                .match(PasswordDecryptMessage.class, this::handle)
                 .matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
                 .build();
     }
@@ -124,8 +141,14 @@ public class Worker extends AbstractLoggingActor {
     private void handle(HintDecryptMessage message) {
         this.log().info("Received work! No longer living on the streets :).");
         HashMap<Integer, Character> result = decryptHint(message.getHints(), message.getAvailableCharacters(), message.prefix);
-        getSender().tell(new Master.ResultMessage(result), this.getSelf());
+        getSender().tell(new Master.ResultMessage(result, message.getBatchID()), this.getSelf());
         this.log().info("Finished with work. Decrypted " + result.size() + " hints!");
+    }
+
+    private void handle(PasswordDecryptMessage message) {
+        this.log().info("Received work! Will decrypt password like a true hacker");
+        String decryptedPassword = decryptPassword(message.encryptedPassword, message.charactersAllowed, message.passwordSize);
+        this.getSender().tell(new Master.PasswordResultMessage(decryptedPassword, message.getBatchID()), this.getSelf());
     }
 
     //////////////////////
@@ -205,19 +228,33 @@ public class Worker extends AbstractLoggingActor {
         }
     }
 
+    private static String decryptPassword(String encryptedPassword, String availableCharacters, int passwordLength) {
+        List<String> combinations = Worker.getAllCombinations(availableCharacters.toCharArray(), passwordLength);
+
+        for (String combination : combinations) {
+            if (Worker.hash(combination).equals(encryptedPassword)) {
+                return combination;
+            }
+        }
+
+        System.out.println("Found no valid password");
+        return "";
+    }
+
+
     public static List<String> getAllCombinations(char[] set, int k) {
         List<String> allPossibilites = new ArrayList<>();
         int n = set.length;
-        printAllKLengthRec(set, "", n, k, allPossibilites);
+        getAllKLengthRec(set, "", n, k, allPossibilites);
         return allPossibilites;
     }
 
     // The main recursive method
     // to print all possible
     // strings of length k
-    private static void printAllKLengthRec(char[] set,
-                                           String prefix,
-                                           int n, int k, List<String> allPossibilities) {
+    private static void getAllKLengthRec(char[] set,
+                                         String prefix,
+                                         int n, int k, List<String> allPossibilities) {
         // Base case: k is 0,
         // print prefix
         if (k == 0) {
@@ -235,7 +272,7 @@ public class Worker extends AbstractLoggingActor {
 
             // k is decreased, because
             // we have added a new character
-            printAllKLengthRec(set, newPrefix,
+            getAllKLengthRec(set, newPrefix,
                     n, k - 1, allPossibilities);
         }
     }

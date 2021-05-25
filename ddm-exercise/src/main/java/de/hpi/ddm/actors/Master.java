@@ -8,8 +8,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.stream.Collectors;
-
 
 public class Master extends AbstractLoggingActor {
 
@@ -32,6 +30,12 @@ public class Master extends AbstractLoggingActor {
         this.workload = new LinkedList<>();
         this.idleWorker = new LinkedList<>();
         this.busyWorkers = new HashMap<>();
+        this.hintsInLine = new HashMap<>();
+        this.charactersNotInPasswords = new HashMap<>();
+        this.encryptedPasswords = new HashMap<>();
+        this.numDecryptedPasswords = new HashMap<>();
+        this.waitingForReader = true;
+        this.finishedReading = true;
     }
 
     ////////////////////
@@ -57,7 +61,18 @@ public class Master extends AbstractLoggingActor {
     public static class ResultMessage implements Serializable {
         private static final long serialVersionUID = 8343040942748609598L;
         private HashMap<Integer, Character> missingCharacters;
+        private int batchID;
     }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PasswordResultMessage implements Serializable {
+        private static final long serialVersionUID = 8343040942748609592L;
+        private String password;
+        private int batchID;
+    }
+
 
     @Data
     public static class RegistrationMessage implements Serializable {
@@ -72,14 +87,18 @@ public class Master extends AbstractLoggingActor {
     private final ActorRef collector;
     private final List<ActorRef> workers;
     private final ActorRef largeMessageProxy;
-    private final Queue<Worker.HintDecryptMessage> workload;
+    private final Queue<Worker.WorkerTask> workload;
     private final LinkedList<ActorRef> idleWorker;
-    private final Map<ActorRef, Worker.HintDecryptMessage> busyWorkers;
-    private List<Integer> hintSizes;
-    private List<Character> missingCharacters;
+    private final Map<ActorRef, Worker.WorkerTask> busyWorkers;
+    private final HashMap<Integer, List<Integer>> hintsInLine;
+    private final HashMap<Integer, List<Character>> charactersNotInPasswords;
+    private final HashMap<Integer, List<String>> encryptedPasswords;
+    private final HashMap<Integer, Integer> numDecryptedPasswords;
     private String availableCharacters;
-    private List<String> passwords;
     private int passwordSize;
+    private int batchIndex;
+    private boolean waitingForReader;
+    private boolean finishedReading;
 
     private long startTime;
 
@@ -104,6 +123,7 @@ public class Master extends AbstractLoggingActor {
                 .match(Terminated.class, this::handle)
                 .match(RegistrationMessage.class, this::handle)
                 .match(ResultMessage.class, this::handle)
+                .match(PasswordResultMessage.class, this::handle)
                 .matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
                 .build();
     }
@@ -117,28 +137,32 @@ public class Master extends AbstractLoggingActor {
     protected void handle(BatchMessage message) {
 
         if (message.getLines().isEmpty()) {
-            // TODO: Stop fetching lines from the Reader once an empty BatchMessage was received; we have seen all data then
-            // TODO: await all results and finish
-            this.terminate();
+            finishedReading = true;
+            checkIfFinished();
             return;
         }
 
+        this.batchIndex++;
 
         availableCharacters = message.getLines().get(0)[2];
         passwordSize = Integer.parseInt(message.getLines().get(0)[3]);
-        this.hintSizes = new ArrayList<>();
-        this.passwords = new ArrayList<>();
-        this.missingCharacters = new ArrayList<>();
+        ArrayList<Integer> hintsInLine = new ArrayList<>();
+        ArrayList<String> encryptedPasswords = new ArrayList<>();
+        ArrayList<Character> charactersNotInPasswords;
 
         List<String> hints = new ArrayList<>();
         for (String[] line : message.getLines()) {
             hints.addAll(Arrays.asList(line).subList(5, line.length));
-            hintSizes.add(line.length - 5);
-            passwords.add(line[4]);
+            hintsInLine.add(line.length - 5);
+            encryptedPasswords.add(line[4]);
         }
 
-        int totalSize = hintSizes.stream().reduce(0, Integer::sum);
-        missingCharacters = new ArrayList<>(Collections.nCopies(totalSize, NO_CHAR));
+        int totalSize = hintsInLine.stream().reduce(0, Integer::sum);
+        charactersNotInPasswords = new ArrayList<>(Collections.nCopies(totalSize, NO_CHAR));
+        this.hintsInLine.put(this.batchIndex, hintsInLine);
+        this.encryptedPasswords.put(this.batchIndex, encryptedPasswords);
+        this.charactersNotInPasswords.put(this.batchIndex, charactersNotInPasswords);
+        this.numDecryptedPasswords.put(this.batchIndex, 0);
 
         for (char char1 : availableCharacters.toCharArray()) {
             for (char char2 : availableCharacters.toCharArray()) {
@@ -147,25 +171,12 @@ public class Master extends AbstractLoggingActor {
                         .replaceFirst(Character.toString(char1), "")
                         .replaceFirst(Character.toString(char2), "");
                 String leftOut = new String(new char[]{char1, char2});
-                Worker.HintDecryptMessage msg = new Worker.HintDecryptMessage(newAvailable, leftOut, hints);
-                workload.add(msg);
+                Worker.HintDecryptMessage msg = new Worker.HintDecryptMessage(newAvailable, leftOut, hints, this.batchIndex);
+                this.addWork(msg);
             }
         }
-        int num_idle_workers = idleWorker.size();
-        for (int i = 0; i < num_idle_workers; i++) {
-            giveWorkerAJob(idleWorker.remove());
-        }
-    }
+        this.waitingForReader = false;
 
-    private void giveWorkerAJob(ActorRef worker) {
-        if (workload.size() == 0) {
-            idleWorker.add(worker);
-        } else {
-            Worker.HintDecryptMessage work = workload.remove();
-            //this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(work, worker), this.self());
-            worker.tell(work, this.self());
-            this.busyWorkers.put(worker, work);
-        }
     }
 
     protected void terminate() {
@@ -208,37 +219,86 @@ public class Master extends AbstractLoggingActor {
     }
 
     protected void handle(ResultMessage message) {
-        busyWorkers.remove(getSender());
-        this.log().info("Received result from " + getSender());
-        giveWorkerAJob(getSender());
+        gotResultsFrom(getSender());
+        List<Character> charactersNotInPasswords = this.charactersNotInPasswords.get(message.getBatchID());
+        List<Integer> hintsInLine = this.hintsInLine.get(message.getBatchID());
 
         for (Integer position : message.missingCharacters.keySet()) {
-            missingCharacters.set(position, message.missingCharacters.get(position));
+            charactersNotInPasswords.set(position, message.missingCharacters.get(position));
         }
 
-        int missingCharactersFound = (int) missingCharacters.stream()
+        int missingCharactersFound = (int) charactersNotInPasswords.stream()
                 .filter(character -> !character.equals(NO_CHAR)).count();
-        int totalSize = hintSizes.stream().reduce(0, Integer::sum);
-        this.log().info("Waiting for " + (totalSize - missingCharactersFound) + " Results");
+        int totalSize = charactersNotInPasswords.size();//hintsInLine.stream().reduce(0, Integer::sum);
+        this.log().info("Waiting for " + (totalSize - missingCharactersFound) + " Results in batch " + message.getBatchID());
         if (missingCharactersFound != totalSize) {
             return;
         }
-        this.log().info("Calculate Passwords");
 
-        List<List<Character>> deflattened = deflattenDecryptedHints(missingCharacters, hintSizes);
-        for (int i = 0; i < passwords.size(); i++) {
+        this.log().info("Calculate Passwords");
+        List<String> encryptedPasswords = this.encryptedPasswords.get(message.getBatchID());
+
+        List<List<Character>> deflattened = deflattenDecryptedHints(charactersNotInPasswords, hintsInLine);
+        for (int i = 0; i < encryptedPasswords.size(); i++) {
             List<Character> forbiddenChars = deflattened.get(i);
-            String password = passwords.get(i);
+            String password = encryptedPasswords.get(i);
             String withForbiddenRemoved = availableCharacters;
             for (Character forbiddenChar : forbiddenChars) {
                 withForbiddenRemoved = withForbiddenRemoved.replace(Character.toString(forbiddenChar), "");
             }
-            String pass = decryptPassword(password, withForbiddenRemoved, passwordSize);
-            this.collector.tell(new Collector.CollectMessage(pass), this.self());
+            //TODO split up passwords maybe
+            this.addWork(new Worker.PasswordDecryptMessage(password, withForbiddenRemoved, passwordSize, message.getBatchID()));
         }
-        System.out.println("Finished");
-        this.reader.tell(new Reader.ReadMessage(), this.self());
+    }
 
+    protected void handle(PasswordResultMessage message) {
+        gotResultsFrom(getSender());
+        final int batchID = message.getBatchID();
+        this.collector.tell(new Collector.CollectMessage(message.getPassword()), this.self());
+        this.numDecryptedPasswords.computeIfPresent(batchID, (integer, integer2) -> integer2 + 1);
+        if (this.numDecryptedPasswords.get(batchID) == this.encryptedPasswords.get(batchID).size()) {
+            this.encryptedPasswords.remove(batchID);
+            this.numDecryptedPasswords.remove(batchID);
+            this.charactersNotInPasswords.remove(batchID);
+            this.hintsInLine.remove(batchID);
+        }
+        checkIfFinished();
+    }
+
+    protected void checkIfFinished() {
+        if (this.finishedReading && this.numDecryptedPasswords.size() == 0) {
+            this.terminate();
+        }
+    }
+
+    private void giveWorkerAJob(ActorRef worker) {
+        if (workload.size() == 0) {
+            idleWorker.add(worker);
+            if (!this.waitingForReader) {
+                this.reader.tell(new Reader.ReadMessage(), this.self());
+                this.waitingForReader = true;
+            }
+        } else
+            this.giveWorkerAJob(worker, workload.remove());
+    }
+
+    private void giveWorkerAJob(ActorRef worker, Worker.WorkerTask work) {
+        //this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(work, worker), this.self());
+        worker.tell(work, this.self());
+        this.busyWorkers.put(worker, work);
+    }
+
+    private void addWork(Worker.WorkerTask work) {
+        if (this.idleWorker.isEmpty())
+            this.workload.add(work);
+        else
+            giveWorkerAJob(idleWorker.remove(), work);
+    }
+
+    private void gotResultsFrom(ActorRef worker) {
+        this.log().info("Received result from " + worker);
+        busyWorkers.remove(worker);
+        this.giveWorkerAJob(worker);
     }
 
     private static List<List<Character>> deflattenDecryptedHints(List<Character> hints, List<Integer> hintsOfLine) {
@@ -258,18 +318,4 @@ public class Master extends AbstractLoggingActor {
         }
         return deflattenedHints;
     }
-
-    private static String decryptPassword(String encryptedPassword, String availableCharacters, int passwordLength) {
-        List<String> combinations = Worker.getAllCombinations(availableCharacters.toCharArray(), passwordLength);
-
-        for (String combination : combinations) {
-            if (Worker.hash(combination).equals(encryptedPassword)) {
-                return combination;
-            }
-        }
-
-        System.out.println("Found no valid password");
-        return "";
-    }
-
 }
