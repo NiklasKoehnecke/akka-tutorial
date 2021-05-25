@@ -151,8 +151,8 @@ public class Master extends AbstractLoggingActor {
                 workload.add(msg);
             }
         }
-        //TODO why do workers die :(
-        for (int i = 0; i < idleWorker.size(); i++) {
+        int num_idle_workers = idleWorker.size();
+        for (int i = 0; i < num_idle_workers; i++) {
             giveWorkerAJob(idleWorker.remove());
         }
     }
