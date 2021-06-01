@@ -208,12 +208,11 @@ public class Master extends AbstractLoggingActor {
         this.context().unwatch(unsubscriber);
         this.workers.remove(unsubscriber);
         if (this.busyWorkers.containsKey(unsubscriber)) {
-            this.workload.add(this.busyWorkers.remove(unsubscriber));
+            addWork(this.busyWorkers.remove(unsubscriber));
         }
         int idleIndex = this.idleWorker.indexOf(unsubscriber);
         if (idleIndex != -1)
             this.idleWorker.remove(idleIndex);
-        //TODO distribute work if everyone is already idle
 
         this.log().info("Unregistered {}", message.getActor());
     }
