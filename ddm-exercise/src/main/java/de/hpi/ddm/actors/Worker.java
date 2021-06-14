@@ -10,6 +10,7 @@ import akka.cluster.ClusterEvent.MemberRemoved;
 import akka.cluster.ClusterEvent.MemberUp;
 import akka.cluster.Member;
 import akka.cluster.MemberStatus;
+import de.hpi.ddm.structures.BloomFilter;
 import de.hpi.ddm.systems.MasterSystem;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -45,6 +46,12 @@ public class Worker extends AbstractLoggingActor {
     // Actor Messages //
     ////////////////////
 
+    @Data @NoArgsConstructor @AllArgsConstructor
+    public static class WelcomeMessage implements Serializable {
+        private static final long serialVersionUID = 8343040942748609598L;
+        private BloomFilter welcomeData;
+    }
+
     public static abstract class WorkerTask {
 
     }
@@ -78,6 +85,7 @@ public class Worker extends AbstractLoggingActor {
     private Member masterSystem;
     private final Cluster cluster;
     private final ActorRef largeMessageProxy;
+    private long registrationTime;
     private static final String NO_DECRYPTION = "";
 
     /////////////////////
@@ -107,6 +115,7 @@ public class Worker extends AbstractLoggingActor {
                 .match(MemberUp.class, this::handle)
                 .match(MemberRemoved.class, this::handle)
                 .match(HintDecryptMessage.class, this::handle)
+                .match(WelcomeMessage.class, this::handle)
                 .match(PasswordDecryptMessage.class, this::handle)
                 .matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
                 .build();
@@ -130,6 +139,8 @@ public class Worker extends AbstractLoggingActor {
             this.getContext()
                     .actorSelection(member.address() + "/user/" + Master.DEFAULT_NAME)
                     .tell(new Master.RegistrationMessage(), this.self());
+
+            this.registrationTime = System.currentTimeMillis();
         }
     }
 
@@ -143,6 +154,11 @@ public class Worker extends AbstractLoggingActor {
         HashMap<Integer, Character> result = decryptHint(message.getHints(), message.getAvailableCharacters(), message.prefix);
         getSender().tell(new Master.ResultMessage(result, message.getBatchID()), this.getSelf());
         this.log().info("Finished with work. Decrypted " + result.size() + " hints!");
+    }
+
+    private void handle(WelcomeMessage message) {
+        final long transmissionTime = System.currentTimeMillis() - this.registrationTime;
+        this.log().info("WelcomeMessage with " + message.getWelcomeData().getSizeInMB() + " MB data received in " + transmissionTime + " ms.");
     }
 
     private void handle(PasswordDecryptMessage message) {

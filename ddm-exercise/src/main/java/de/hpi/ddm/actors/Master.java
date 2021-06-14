@@ -4,6 +4,7 @@ import java.io.Serializable;
 import java.util.*;
 
 import akka.actor.*;
+import de.hpi.ddm.structures.BloomFilter;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -18,11 +19,11 @@ public class Master extends AbstractLoggingActor {
     public static final String DEFAULT_NAME = "master";
     private static final Character NO_CHAR = '#';
 
-    public static Props props(final ActorRef reader, final ActorRef collector) {
-        return Props.create(Master.class, () -> new Master(reader, collector));
+    public static Props props(final ActorRef reader, final ActorRef collector, final BloomFilter welcomeData) {
+        return Props.create(Master.class, () -> new Master(reader, collector, welcomeData));
     }
 
-    public Master(final ActorRef reader, final ActorRef collector) {
+    public Master(final ActorRef reader, final ActorRef collector, final BloomFilter welcomeData) {
         this.reader = reader;
         this.collector = collector;
         this.workers = new ArrayList<>();
@@ -36,6 +37,7 @@ public class Master extends AbstractLoggingActor {
         this.numDecryptedPasswords = new HashMap<>();
         this.waitingForReader = true;
         this.finishedReading = true;
+        this.welcomeData = welcomeData;
     }
 
     ////////////////////
@@ -99,6 +101,7 @@ public class Master extends AbstractLoggingActor {
     private int batchIndex;
     private boolean waitingForReader;
     private boolean finishedReading;
+    private final BloomFilter welcomeData;
 
     private long startTime;
 
@@ -200,6 +203,7 @@ public class Master extends AbstractLoggingActor {
         this.context().watch(this.sender());
         this.workers.add(this.sender());
         this.log().info("Registered {}", this.sender());
+        this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Worker.WelcomeMessage(this.welcomeData), this.sender()), this.self());
         giveWorkerAJob(this.sender());
     }
 
@@ -282,7 +286,6 @@ public class Master extends AbstractLoggingActor {
     }
 
     private void giveWorkerAJob(ActorRef worker, Worker.WorkerTask work) {
-        //this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(work, worker), this.self());
         worker.tell(work, this.self());
         this.busyWorkers.put(worker, work);
     }

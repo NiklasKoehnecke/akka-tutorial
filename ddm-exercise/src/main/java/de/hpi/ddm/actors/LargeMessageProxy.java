@@ -9,10 +9,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 
 import akka.NotUsed;
-import akka.actor.AbstractLoggingActor;
-import akka.actor.ActorRef;
-import akka.actor.ActorSelection;
-import akka.actor.Props;
+import akka.actor.*;
 import akka.stream.javadsl.Sink;
 import akka.stream.javadsl.Source;
 import com.twitter.chill.KryoPool;
@@ -57,7 +54,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
     /////////////////
     // Actor State //
     /////////////////
-    private static List<BytesMessage> data;
+    private List<BytesMessage> data;
     /////////////////////
     // Actor Lifecycle //
     /////////////////////
@@ -66,20 +63,23 @@ public class LargeMessageProxy extends AbstractLoggingActor {
     // Actor Behavior //
     ////////////////////
 
-    static class StreamInitialized {
+    @NoArgsConstructor
+    static class StreamInitialized implements Serializable{
     }
 
     @Data
     @AllArgsConstructor
-    static class StreamCompleted {
-        private final ActorRef receiver;
-        private final ActorRef sender;
+    @NoArgsConstructor
+    static class StreamCompleted implements Serializable{
+        private ActorRef receiver;
+        private ActorRef sender;
     }
 
     @Data
+    @NoArgsConstructor
     @AllArgsConstructor
-    static class StreamFailure {
-        private final Throwable cause;
+    static class StreamFailure implements Serializable{
+        private Throwable cause;
     }
 
     enum Ack {
@@ -100,7 +100,6 @@ public class LargeMessageProxy extends AbstractLoggingActor {
                 .match(
                         BytesMessage.class,
                         element -> {
-                            //log().info("Received element: {}", element);
                             data.add(element);
                             sender().tell(Ack.INSTANCE, self());
                         })
@@ -130,9 +129,9 @@ public class LargeMessageProxy extends AbstractLoggingActor {
             KryoPool serializer = KryoPoolSingleton.get();
             this.log().info("Found class when encoding " + serializer.hasRegistration(message.getClass()));
             byte[] output = serializer.toBytesWithClass(message);
-            //todo maybe try out without class. Alternatively register it
-            // see https://github.com/altoo-ag/akka-kryo-serialization
-            Iterable<BytesMessage> groupedOutput = group(output, 100);
+
+            int MAX_SIZE = 250000;
+            Iterable<BytesMessage> groupedOutput = group(output, MAX_SIZE);
 
             Source<BytesMessage, NotUsed> source = Source.from(groupedOutput);
             Sink<BytesMessage, NotUsed> sink = Sink.actorRefWithBackpressure(x,
@@ -141,6 +140,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
                     new StreamCompleted(receiver, getSender()),
                     ex -> new StreamFailure(ex));
             source.runWith(sink, this.getContext().getSystem());
+
         } catch (InterruptedException e) {
             e.printStackTrace();
         } catch (ExecutionException e) {
@@ -153,17 +153,17 @@ public class LargeMessageProxy extends AbstractLoggingActor {
         KryoPool serializer = KryoPoolSingleton.get();
         ActorRef receiver = message.getReceiver();
 
-        Object originalMessage = serializer.fromBytes(convertMessages());
-        //LargeMessage originalMessage = new LargeMessage(serializer.fromBytes(convertMessages()), receiver);
+        byte[] encryptedMessage = convertMessages();
+
+        Object originalMessage = serializer.fromBytes(encryptedMessage);
         receiver.tell(originalMessage, message.getSender());
         this.log().info("Send answer");
     }
 
-    private static byte[] convertMessages() {
+    private byte[] convertMessages() {
         int totalBytes = (data.size() - 1) * data.get(0).getBytes().length + data.get(data.size() - 1).getBytes().length;
         byte[] bytes = new byte[totalBytes];
         int i = 0;
-        //TODO concurrentModificationException
         for (BytesMessage m : data) {
             System.arraycopy(m.getBytes(), 0, bytes, i, m.getBytes().length);
             i += m.getBytes().length;
