@@ -13,6 +13,7 @@ import akka.actor.*;
 import akka.stream.javadsl.Sink;
 import akka.stream.javadsl.Source;
 import com.twitter.chill.KryoPool;
+import com.typesafe.config.Config;
 import de.hpi.ddm.singletons.KryoPoolSingleton;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -118,7 +119,6 @@ public class LargeMessageProxy extends AbstractLoggingActor {
         Object message = largeMessage.getMessage();
         ActorRef receiver = largeMessage.getReceiver();
         ActorSelection receiverProxy = this.context().actorSelection(receiver.path().child(DEFAULT_NAME));
-        // TODO: Maybe change with communication
 
         CompletionStage<ActorRef> newRef = receiverProxy.resolveOne(Duration.ofSeconds(1));
         try {
@@ -127,12 +127,14 @@ public class LargeMessageProxy extends AbstractLoggingActor {
             log().info("Start sending msg to " + x);
 
             KryoPool serializer = KryoPoolSingleton.get();
-            this.log().info("Found class when encoding " + serializer.hasRegistration(message.getClass()));
             byte[] output = serializer.toBytesWithClass(message);
 
-            int MAX_SIZE = 250000;
-            Iterable<BytesMessage> groupedOutput = group(output, MAX_SIZE);
+            Config systemConfig = context().system().settings().config();
+            long systemMaxBytes = systemConfig.getBytes("akka.remote.artery.advanced.maximum-large-frame-size");
+            //the right thing to do would be to ask the worker large message proxy its buffer size, but this should do the trick for now
+            int MAX_SIZE = (int) Math.min(systemMaxBytes / 2, Integer.MAX_VALUE);
 
+            Iterable<BytesMessage> groupedOutput = group(output, MAX_SIZE);
             Source<BytesMessage, NotUsed> source = Source.from(groupedOutput);
             Sink<BytesMessage, NotUsed> sink = Sink.actorRefWithBackpressure(x,
                     new StreamInitialized(),
@@ -157,7 +159,6 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
         Object originalMessage = serializer.fromBytes(encryptedMessage);
         receiver.tell(originalMessage, message.getSender());
-        this.log().info("Send answer");
     }
 
     private byte[] convertMessages() {

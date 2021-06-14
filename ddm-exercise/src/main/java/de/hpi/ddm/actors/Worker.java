@@ -150,7 +150,7 @@ public class Worker extends AbstractLoggingActor {
     }
 
     private void handle(HintDecryptMessage message) {
-        this.log().info("Received work! No longer living on the streets :).");
+        this.log().info("Received work! No longer living on the streets :)");
         HashMap<Integer, Character> result = decryptHint(message.getHints(), message.getAvailableCharacters(), message.prefix);
         getSender().tell(new Master.ResultMessage(result, message.getBatchID()), this.getSelf());
         this.log().info("Finished with work. Decrypted " + result.size() + " hints!");
